@@ -1,5 +1,7 @@
 <?php
 
+defined( 'ABSPATH' ) || die();
+
 add_action( 'wp', array( 'GFPayPal', 'maybe_thankyou_page' ), 5 );
 
 GFForms::include_payment_addon_framework();
@@ -49,7 +51,69 @@ class GFPayPal extends GFPaymentAddOn {
 		add_filter( 'gform_disable_notification', array( $this, 'delay_notification' ), 10, 4 );
 	}
 
+	/**
+	 * Returns what should be used to prepare the payment amount; form_total or the ID of a specific product field.
+	 *
+	 * @since 3.3
+	 *
+	 * @param array $feed The current feed.
+	 *
+	 * @return string
+	 */
+	public function get_payment_field( $feed ) {
+		switch ( rgars( $feed, 'meta/transactionType' ) ) {
+			case 'subscription':
+				$key = 'recurringAmount';
+				break;
+
+			case 'product':
+			case 'donation':
+				$key = 'paymentAmount';
+				break;
+		}
+
+		return rgars( $feed, 'meta/' . $key, 'form_total' );
+	}
+
 	//----- SETTINGS PAGES ----------//
+
+	/**
+	 * Return the plugin's icon for the plugin/form settings menu.
+	 *
+	 * @since 3.2
+	 *
+	 * @return string
+	 */
+	public function get_menu_icon() {
+
+		return file_get_contents( $this->get_base_path() . '/images/menu-icon.svg' );
+
+	}
+
+	/**
+	 * Register needed styles.
+	 *
+	 * @since  3.2
+	 *
+	 * @return array $styles
+	 */
+	public function styles() {
+		$min = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG || isset( $_GET['gform_debug'] ) ? '' : '.min';
+
+		$styles = array(
+			array(
+				'handle'  => 'gform_paypal_form_settings_css',
+				'src'     => $this->get_base_url() . "/css/form_settings{$min}.css",
+				'version' => $this->_version,
+				'enqueue' => array(
+					array( 'admin_page' => array( 'form_settings' ) ),
+				),
+			),
+		);
+
+		return array_merge( parent::styles(), $styles );
+
+	}
 
 	public function plugin_settings_fields() {
 		$description = '
@@ -60,7 +124,7 @@ class GFPayPal extends GFPaymentAddOn {
 				<li>' . sprintf( esc_html__( 'Navigate to your PayPal %sIPN Settings page.%s', 'gravityformspaypal' ), '<a href="https://www.paypal.com/us/cgi-bin/webscr?cmd=_profile-ipn-notify" target="_blank">', '</a>' ) . '</li>' .
 			'<li>' . esc_html__( 'If IPN is already enabled, you will see your current IPN settings along with a button to turn off IPN. If that is the case, just check the confirmation box below and you are ready to go!', 'gravityformspaypal' ) . '</li>' .
 			'<li>' . esc_html__( "If IPN is not enabled, click the 'Choose IPN Settings' button.", 'gravityformspaypal' ) . '</li>' .
-			'<li>' . sprintf( esc_html__( 'Click the box to enable IPN and enter the following Notification URL: %s', 'gravityformspaypal' ), '<strong>' . esc_url( add_query_arg( 'page', 'gf_paypal_ipn', get_bloginfo( 'url' ) . '/' ) ) . '</strong>' ) . '</li>' .
+			'<li>' . sprintf( esc_html__( 'Click the box to enable IPN and enter the following Notification URL: %s', 'gravityformspaypal' ), '<strong>' . esc_url( $this->get_callback_url() ) . '</strong>' ) . '</li>' .
 			'</ul>
 				<br/>';
 
@@ -74,12 +138,6 @@ class GFPayPal extends GFPaymentAddOn {
 						'label'   => esc_html__( 'PayPal IPN Setting', 'gravityformspaypal' ),
 						'type'    => 'checkbox',
 						'choices' => array( array( 'label' => esc_html__( 'Confirm that you have configured your PayPal account to enable IPN', 'gravityformspaypal' ), 'name' => 'gf_paypal_configured' ) )
-					),
-					array(
-						'type' => 'save',
-						'messages' => array(
-											'success' => esc_html__( 'Settings have been updated.', 'gravityformspaypal' )
-											),
 					),
 				),
 			),
@@ -302,17 +360,22 @@ class GFPayPal extends GFPaymentAddOn {
 
 	public function settings_trial_period( $field, $echo = true ) {
 		//use the parent billing cycle function to make the drop down for the number and type
-		$html = parent::settings_billing_cycle( $field );
+		$html = parent::settings_billing_cycle( $field, false );
+
+		if ( $echo ) {
+			echo $html;
+		}
 
 		return $html;
 	}
 
 	public function set_trial_onchange( $field ) {
 		//return the javascript for the onchange event
+		$row_id = $this->is_gravityforms_supported( '2.5-dev-1' ) ? '#gform_setting_trialPeriod' : '#gaddon-setting-row-trialPeriod';
 		return "
 		if(jQuery(this).prop('checked')){
 			jQuery('#{$field['name']}_product').show('slow');
-			jQuery('#gaddon-setting-row-trialPeriod').show('slow');
+			jQuery('{$row_id}').show('slow');
 			if (jQuery('#{$field['name']}_product').val() == 'enter_amount'){
 				jQuery('#{$field['name']}_amount').show('slow');
 			}
@@ -323,7 +386,7 @@ class GFPayPal extends GFPaymentAddOn {
 		else {
 			jQuery('#{$field['name']}_product').hide('slow');
 			jQuery('#{$field['name']}_amount').hide();
-			jQuery('#gaddon-setting-row-trialPeriod').hide('slow');
+			jQuery('{$row_id}').hide('slow');
 		}";
 	}
 
@@ -353,12 +416,6 @@ class GFPayPal extends GFPaymentAddOn {
 			do_action( 'gform_paypal_add_option_group', $this->get_current_feed(), $this->get_current_form() );
 			?>
 		</div>
-
-		<script type='text/javascript'>
-			jQuery(document).ready(function () {
-				jQuery('#gf_paypal_custom_settings label.left_header').css('margin-left', '-200px');
-			});
-		</script>
 
 		<?php
 
@@ -597,7 +654,7 @@ class GFPayPal extends GFPaymentAddOn {
 		$disable_shipping = ! empty( $feed['meta']['disableShipping'] ) ? '&no_shipping=1' : '';
 
 		//URL that will listen to notifications from PayPal
-		$ipn_url = urlencode( get_bloginfo( 'url' ) . '/?page=gf_paypal_ipn' );
+		$ipn_url = urlencode( $this->get_callback_url() );
 
 		$business_email = urlencode( trim( $feed['meta']['paypalEmail'] ) );
 		$custom_field   = $entry['id'] . '|' . wp_hash( $entry['id'] );
@@ -1025,29 +1082,21 @@ class GFPayPal extends GFPaymentAddOn {
 	}
 
 	public function delay_post( $is_disabled, $form, $entry ) {
-
-		$feed            = $this->get_payment_feed( $entry );
-		$submission_data = $this->get_submission_data( $feed, $form, $entry );
-
-		if ( ! $feed || empty( $submission_data['payment_amount'] ) ) {
+		if ( ! $this->is_payment_gateway ) {
 			return $is_disabled;
 		}
+
+		$feed = $this->current_feed;
 
 		return ! rgempty( 'delayPost', $feed['meta'] );
 	}
 
 	public function delay_notification( $is_disabled, $notification, $form, $entry ) {
-		if ( rgar( $notification, 'event' ) != 'form_submission' ) {
+		if ( ! $this->is_payment_gateway || rgar( $notification, 'event' ) != 'form_submission' ) {
 			return $is_disabled;
 		}
 
-		$feed            = $this->get_payment_feed( $entry );
-		$submission_data = $this->get_submission_data( $feed, $form, $entry );
-
-		if ( ! $feed || empty( $submission_data['payment_amount'] ) ) {
-			return $is_disabled;
-		}
-
+		$feed                   = $this->current_feed;
 		$selected_notifications = is_array( rgar( $feed['meta'], 'selectedNotifications' ) ) ? rgar( $feed['meta'], 'selectedNotifications' ) : array();
 
 		return isset( $feed['meta']['delayNotification'] ) && in_array( $notification['id'], $selected_notifications ) ? true : $is_disabled;
@@ -1555,12 +1604,29 @@ class GFPayPal extends GFPaymentAddOn {
 		}
 	}
 
+	/**
+	 * Determines if the current request is to the IPN URL.
+	 *
+	 * Support for page=gf_paypal_ipn remains so IPNs will continue to be processed for existing subscriptions.
+	 *
+	 * @since unknown
+	 * @since 3.4 Added support for requests to the frameworks default callback=slug URL.
+	 *
+	 * @return bool
+	 */
 	public function is_callback_valid() {
-		if ( rgget( 'page' ) != 'gf_paypal_ipn' ) {
-			return false;
-		}
+		return parent::is_callback_valid() || rgget( 'page' ) === 'gf_paypal_ipn';
+	}
 
-		return true;
+	/**
+	 * Returns the URL to be used for IPN processing.
+	 *
+	 * @since 3.4
+	 *
+	 * @return string
+	 */
+	public function get_callback_url() {
+		return add_query_arg( 'callback', $this->_slug, home_url( '/', 'https' ) );
 	}
 
 	private function get_pending_reason( $code ) {
@@ -1603,16 +1669,6 @@ class GFPayPal extends GFPaymentAddOn {
 		}
 	}
 
-	//------- AJAX FUNCTIONS ------------------//
-
-	public function init_ajax() {
-
-		parent::init_ajax();
-
-		add_action( 'wp_ajax_gf_dismiss_paypal_menu', array( $this, 'ajax_dismiss_menu' ) );
-
-	}
-
 	//------- ADMIN FUNCTIONS/HOOKS -----------//
 
 	public function init_admin() {
@@ -1626,15 +1682,9 @@ class GFPayPal extends GFPaymentAddOn {
 		add_action( 'gform_payment_amount', array( $this, 'admin_edit_payment_amount' ), 3, 3 );
 		add_action( 'gform_after_update_entry', array( $this, 'admin_update_payment' ), 4, 2 );
 
-		add_filter( 'gform_addon_navigation', array( $this, 'maybe_create_menu' ) );
-
 		//checking if webserver is compatible with PayPal SSL certificate
 		add_action( 'admin_notices', array( $this, 'check_ipn_request' ) );
 
-		if ( ! self::is_tls_1_2() ) {
-			GFCommon::add_error_message( '<strong>WARNING: You may no longer be able to accept PayPal payments after June 2018! </strong><br/>It looks like your server does not support TLS 1.2. As of June 2018, PayPal is dropping support for TLS 1.1 and your payments may no longer function properly. It is critically important that you upgrade your server to support TLS 1.2 as soon as possible. For more information, contact your web hosting provider and ask them to support TLS 1.2. More information is available in <a href=“https://www.paypal.com/au/webapps/mpp/tls-http-upgrade” target=“_blank”>PayPal’s TLS 1.2 and HTTP/1.1 Upgrade Documentation</a>. 
-										  <p>If you have made the necessary changes, and still see this message, you can <a href="' . add_query_arg( array( 'flush' => 1 ) ) . '">check again</a>.</p>' );
-		}
 	}
 
 	/**
@@ -1661,67 +1711,6 @@ class GFPayPal extends GFPaymentAddOn {
 				'add_subscription_payment'  => esc_html__( 'Subscription Payment Added', 'gravityformspaypal' ),
 				'fail_subscription_payment' => esc_html__( 'Subscription Payment Failed', 'gravityformspaypal' ),
 		);
-	}
-
-	public function maybe_create_menu( $menus ) {
-		$current_user = wp_get_current_user();
-		$dismiss_paypal_menu = get_metadata( 'user', $current_user->ID, 'dismiss_paypal_menu', true );
-		if ( $dismiss_paypal_menu != '1' ) {
-			$menus[] = array( 'name' => $this->_slug, 'label' => $this->get_short_title(), 'callback' => array( $this, 'temporary_plugin_page' ), 'permission' => $this->_capabilities_form_settings );
-		}
-
-		return $menus;
-	}
-
-	public function ajax_dismiss_menu() {
-
-		$current_user = wp_get_current_user();
-		update_metadata( 'user', $current_user->ID, 'dismiss_paypal_menu', '1' );
-	}
-
-	public function temporary_plugin_page() {
-		$current_user = wp_get_current_user();
-		?>
-		<script type="text/javascript">
-			function dismissMenu(){
-				jQuery('#gf_spinner').show();
-				jQuery.post(ajaxurl, {
-						action : "gf_dismiss_paypal_menu"
-					},
-					function (response) {
-						document.location.href='?page=gf_edit_forms';
-						jQuery('#gf_spinner').hide();
-					}
-				);
-
-			}
-		</script>
-
-		<div class="wrap about-wrap">
-			<h1><?php _e( 'PayPal Add-On v2.0', 'gravityformspaypal' ) ?></h1>
-			<div class="about-text"><?php esc_html_e( 'Thank you for updating! The new version of the Gravity Forms PayPal Standard Add-On makes changes to how you manage your PayPal integration.', 'gravityformspaypal' ) ?></div>
-			<div class="changelog">
-				<hr/>
-				<div class="feature-section col two-col">
-					<div class="col-1">
-						<h3><?php esc_html_e( 'Manage PayPal Contextually', 'gravityformspaypal' ) ?></h3>
-						<p><?php esc_html_e( 'PayPal Feeds are now accessed via the PayPal sub-menu within the Form Settings for the Form you would like to integrate PayPal with.', 'gravityformspaypal' ) ?></p>
-					</div>
-					<div class="col-2 last-feature">
-						<img src="http://gravityforms.s3.amazonaws.com/webimages/PayPalNotice/NewPayPal2.png">
-					</div>
-				</div>
-
-				<hr/>
-
-				<form method="post" id="dismiss_menu_form" style="margin-top: 20px;">
-					<input type="checkbox" name="dismiss_paypal_menu" value="1" onclick="dismissMenu();"> <label><?php _e( 'I understand this change, dismiss this message!', 'gravityformspaypal' ) ?></label>
-					<img id="gf_spinner" src="<?php echo GFCommon::get_base_url() . '/images/spinner.gif'?>" alt="<?php _e( 'Please wait...', 'gravityformspaypal' ) ?>" style="display:none;"/>
-				</form>
-
-			</div>
-		</div>
-		<?php
 	}
 
 	public function admin_edit_payment_status( $payment_status, $form, $entry ) {
@@ -1994,6 +1983,12 @@ class GFPayPal extends GFPaymentAddOn {
 			$this->update_lead();			
 			
 		}
+
+		// Remove TLS 1.2 warning.
+		if ( ! empty( $previous_version ) && version_compare( $previous_version, '3.2', '<' ) ) {
+			delete_transient( 'gravityformspaypal_tlstest_response' );
+		}
+
 	}
 
 	public function uninstall(){
@@ -2018,22 +2013,6 @@ class GFPayPal extends GFPaymentAddOn {
 		}
 
 		return $db_version;
-	}
-
-	public static function is_tls_1_2() {
-
-		// Check for cached response
-		$response = get_transient( 'gravityformspaypal_tlstest_response' );
-
-		if ( empty( $response ) || isset( $_GET['flush'] ) ) {
-			$response = wp_remote_get( 'https://tlstest.paypal.com/' );
-
-			// Caching response for 1 day
-			set_transient( 'gravityformspaypal_tlstest_response', $response, 24 * 60 * 60 );
-		}
-
-		return ! is_wp_error( $response ) && $response['body'] == 'PayPal_Connection_OK' ? true : false;
-
 	}
 
 	//------ FOR BACKWARDS COMPATIBILITY ----------------------//
@@ -2272,6 +2251,4 @@ class GFPayPal extends GFPaymentAddOn {
 	}
 
 	//------------------------------------------------------
-
-
 }
